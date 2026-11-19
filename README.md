@@ -177,7 +177,7 @@ The Claude toggle skips Flask. [`src/app/api/claude/route.ts`](src/app/api/claud
 | Committed data | [`dataset.jsonl`](dataset.jsonl) | 200 JSON objects, 189 unique inputs. Eight inputs are repeated, and the repeats share the same label. |
 | Train | [`notebooks/FlanT5_Calendar_Event_Parser.ipynb`](notebooks/FlanT5_Calendar_Event_Parser.ipynb) | Colab notebook. Loads this JSONL, splits it, fine-tunes Flan-T5, saves a local folder, and pushes a Hub repo named `flan-t5-calendar-parser-team10`. |
 | Serve | [`serve.py`](serve.py) and [`model_server.py`](model_server.py) | Both load `elliottescalante/tuned-flan-t5`. That Hub id is not the same string as the notebook's push target. The repo does not prove the two names point at the same weights. |
-| Score | [`evaluate.py`](evaluate.py) | Loads `elliottescalante/tuned-flan-t5` and reads `test_set.jsonl`. That test file is not in the repository, and no results file is either. |
+| Score | [`evaluate.py`](evaluate.py) | The script reads `test_set.jsonl`, which is not committed. The 500-example scores below were reported from team testing outside this repo. |
 
 Each training row is `{ "input": "<sentence>", "output": { ... } }`. The output fields are `title`, `date` (`YYYY-MM-DD` or null), `time` (`HH:MM` or null), `duration_minutes`, `location`, and `recurrence`. The generator's allowed recurrence values are `none`, `daily`, `weekly`, `biweekly`, `monthly`, `yearly`, and `custom`.
 
@@ -208,7 +208,29 @@ The notebook's own summary says the exported model is an early baseline: generat
 
 ## Evaluation methodology and results
 
-There are two different checks in the repo, and they do not measure the same system.
+### Reported results (not in this repository)
+
+The team evaluated a separate fine-tune outside this repository. That model was trained on 1,430 generated examples and scored on 500 examples. This run, its dataset, and its test set are not committed here. The committed [`dataset.jsonl`](dataset.jsonl) is the 200-row version, and the notebook records training on that file. The numbers below are the team's reported field accuracies. No results file in the repo reproduces them.
+
+| Field | Accuracy |
+| --- | --- |
+| Recurrence | 95.6% |
+| Time | 93.8% |
+| Date | 32.2% |
+
+Date accuracy on that 500-example run is 32.2%, far below recurrence and time. The committed 200-row file and the saved notebook outputs show why a date is the field that fails:
+
+- Many labels require a year the sentence does not state, or a "today" that was never stored. The training prompt does not say what today is. The eval prompt in `evaluate.py` adds the current year and still does not add today's full date. Relative dates cannot be resolved from the input alone.
+- The saved generations on the committed run repeat frequent training dates, or emit strings such as `2025-05-03-15`, instead of reading the date in the new sentence.
+- Exact string match treats a near miss as a failure. A clock time or a repeat word is a short phrase the model can copy. A date often depends on a calendar and an unstated anchor, so a one-day or one-year miss is a total miss.
+- The live app then applies a different date parser. That parser understands today, tomorrow, "in N days", "in N weeks", "next week", a weekday name, a month name plus a day, and a bare day number. It does not read an explicit year. If the month and day are already past, it adds a year. If no rule matches, the route keeps the model date, and if that is empty it uses today. "July 1st 2026" does not keep 2026. "team lunch at 1pm" can land on today.
+- Train, eval, and serve do not share a prompt or a schema. Training asks for `time`. Serving asks for `start_time` and `end_time`. Eval asks for `time` and then nulls some fields with regexes the app does not use. The reported 500-example scores measure the model. They do not measure the calendar route the user sees.
+
+What would move date accuracy up: put today's date in the training and eval prompt, regenerate labels from that same date, teach the route to keep an explicit year, and stop substituting today when the sentence has no date.
+
+Recurrence on the reported run is 95.6%, and the app still drops a lot of it. The committed training labels are mostly `biweekly` and `custom`. The route only returns `daily`, `weekly`, `monthly`, or `yearly`, and only from its own keyword list. It drops the model's recurrence, so a model that learned `biweekly` still shows up in the app as null.
+
+There are also two checks that do live in the repo. They do not measure the same system as each other, and neither one is the 500-example run.
 
 ### API tests
 
@@ -220,17 +242,7 @@ Both Jest files expect a `time` field. The current Flan route returns `start_tim
 
 [`evaluate.py`](evaluate.py) loads `elliottescalante/tuned-flan-t5`, reads `test_set.jsonl`, and scores exact equality on `title`, `date`, `time`, `duration_minutes`, `location`, and `recurrence`. A row counts as an exact match only when every field matches. If the input does not match the script's time, duration, or location regex, the script sets that field to null before scoring. It does not repair dates. A date that is one day off, or one year off, is a full miss. Invalid JSON is an error and is left out of the denominator.
 
-`test_set.jsonl` is not committed. `evaluation_results.txt` is not committed. This repository therefore has no measured field-accuracy table. A 500-example run, and the percentages sometimes quoted for it, are not files in this repo, so they are not listed here as results.
-
-What the repo does show about dates:
-
-- Many labels require a year the sentence does not state, or a "today" that was never stored. The training prompt does not say what today is. The eval prompt adds the current year and still does not add today's full date. Relative dates cannot be resolved from the input alone.
-- The saved generations repeat frequent training dates, or emit strings such as `2025-05-03-15`, instead of reading the date in the new sentence.
-- Exact string match treats a near miss as a failure. That is reasonable for a calendar, and it makes date the brittle field. Clock times and repeat words are local phrases the model can copy. A date often depends on a calendar and an unstated anchor.
-- The live app then applies a different date parser. That parser understands today, tomorrow, "in N days", "in N weeks", "next week", a weekday name, a month name plus a day, and a bare day number. It does not read an explicit year. If the month and day are already past, it adds a year. If no rule matches, the route keeps the model date, and if that is empty it uses today. "July 1st 2026" does not keep 2026. "team lunch at 1pm" can land on today.
-- Train, eval, and serve do not share a prompt or a schema. Training asks for `time`. Serving asks for `start_time` and `end_time`. Eval asks for `time` and then nulls some fields with regexes the app does not use. A score from `evaluate.py` is not a score for the calendar the user sees.
-
-Recurrence has a similar split. The training labels are mostly `biweekly` and `custom`. The route only returns `daily`, `weekly`, `monthly`, or `yearly`, and only from its own keyword list. It drops the model's recurrence, so a model that learned `biweekly` still shows up in the app as null.
+`test_set.jsonl` is not committed. `evaluation_results.txt` is not committed. The 500-example scores in the table above are the team's report of a run that used files this repository does not contain.
 
 ## Individual contributions
 
@@ -241,11 +253,11 @@ Four people committed code. James Liu's feature commits use the author name Jame
 | Calendar scaffold, first event-creation UI, `model_server.py`, early `serve.py`, Flan wiring, Claude route rework, Flan/Claude toggle | Elliott Satchel Escalante |
 | `generate.py` and the 200-row `dataset.jsonl`; `evaluate.py`; calendar fixes that landed with that script | Souzen Khan |
 | Training notebook; the largest current share of the Flan route, including title, duration, location, recurrence, time range, and the response object; expandable event pills; daily/weekly/monthly expansion | Fatima, with a later notebook edit from Elliott |
-| First Claude route; created the Flan route; the date resolver and the single-time resolver still attributed to him in the current file; home screen, sidebar, events list, and cross-page event state; wired a parsed event onto the calendar; Jest setup, mocked API tests, and live API tests; 58 of the 108 current lines in `serve.py` | James Liu |
+| First Claude route; created the Flan route; the date resolver and the single-time resolver still attributed to him in the current file; home screen, sidebar, events list, and cross-page event state; wired a parsed event onto the calendar; helped with evaluation and testing by writing the Jest route tests and the live integration tests; 58 of the 108 current lines in `serve.py` | James Liu |
 
 Line counts are from `git blame` on the current files, so they follow the last edit rather than the original author. On `src/app/api/flan/route.ts` that split is Fatima 206 lines, James 151, Elliott 17. Fatima's June 8 commit is the last touch on title, duration, location, recurrence, time-range, and the final response object. James's lines include `resolveDate`, `resolveTime`, and much of the POST handler. Elliott, Fatima, and Souzen also edited `serve.py`.
 
-James did not write the training notebook, the data generator, or `evaluate.py`. He did not scaffold the month grid. He connected the text box to the Flan route, stored events in context, and built the home screen, sidebar, and events list. He did not build the model or the whole app.
+James helped with evaluation and testing. He wrote the Jest route tests and the live integration tests. He did not author `evaluate.py`. Souzen Khan did. James also did not write the training notebook or the data generator, and he did not scaffold the month grid. He connected the text box to the Flan route, stored events in context, and built the home screen, sidebar, and events list. He did not build the model or the whole app.
 
 ## Install and local development
 
@@ -299,7 +311,7 @@ The only GitHub Actions workflow is [`.github/workflows/sync-components.yml`](.g
 
 ## Known limitations
 
-- No committed test set and no committed accuracy table. The notebook's saved samples are the model outputs this repo can show.
+- The 1,430-example training set, the 500-example test set, and a saved score file for the reported accuracies are not in this repository. The committed dataset is the 200-row file. The notebook's saved samples are the model outputs this repo can show.
 - Date labels and date rules disagree with each other, and both disagree with an explicit year in the sentence. Missing dates fall back to today. That fallback will put an undated event on the current day.
 - `serve.py`, `evaluate.py`, and the training prompt are three different tasks. The served model is also not identified by the same Hub name the notebook pushes.
 - The Flan route ignores model recurrence and has no rule for `biweekly` or `custom`, which are 128 of the 200 training labels.
